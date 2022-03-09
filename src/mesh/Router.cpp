@@ -6,7 +6,7 @@
 #include "RTC.h"
 #include "main.h"
 #include "mesh-pb-constants.h"
-#include "plugins/RoutingPlugin.h"
+#include "modules/RoutingModule.h"
 
 #if defined(HAS_WIFI) || defined(PORTDUINO)
 #include "mqtt/MQTT.h"
@@ -132,7 +132,7 @@ MeshPacket *Router::allocForSending()
  */
 void Router::sendAckNak(Routing_Error err, NodeNum to, PacketId idFrom, ChannelIndex chIndex)
 {
-    routingPlugin->sendAckNak(err, to, idFrom, chIndex);
+    routingModule->sendAckNak(err, to, idFrom, chIndex);
 }
 
 void Router::abortSendAndNak(Routing_Error err, MeshPacket *p)
@@ -376,8 +376,8 @@ void Router::handleReceived(MeshPacket *p, RxSource src)
         printPacket("packet decoding failed (no PSK?)", p);
     }
 
-    // call plugins here
-    MeshPlugin::callPlugins(*p, src);
+    // call modules here
+    MeshModule::callPlugins(*p, src);
 }
 
 void Router::perhapsHandleReceived(MeshPacket *p)

@@ -1,8 +1,6 @@
 #include "configuration.h"
 #include <assert.h>
 
-#include "FS.h"
-
 #include "Channels.h"
 #include "CryptoEngine.h"
 #include "FSCommon.h"
@@ -21,7 +19,7 @@
 
 #ifndef NO_ESP32
 #include "mesh/http/WiFiAPClient.h"
-#include "plugins/esp32/StoreForwardPlugin.h"
+#include "modules/esp32/StoreForwardModule.h"
 #include <Preferences.h>
 #include <nvs_flash.h>
 #endif
@@ -229,34 +227,7 @@ void NodeDB::init()
     info->user = owner;
     info->has_user = true;
 
-    // removed from 1.2 (though we do use old values if found)
-    // We set these _after_ loading from disk - because they come from the build and are more trusted than
-    // what is stored in flash
-    // if (xstr(HW_VERSION)[0])
-    //    strncpy(myNodeInfo.region, optstr(HW_VERSION), sizeof(myNodeInfo.region));
-    // else DEBUG_MSG("This build does not specify a HW_VERSION\n"); // Eventually new builds will no longer include this build
-    // flag
-
-    // DEBUG_MSG("legacy region %d\n", devicestate.legacyRadio.preferences.region);
-    if (radioConfig.preferences.region == RegionCode_Unset)
-        radioConfig.preferences.region = devicestate.legacyRadio.preferences.region;
-
-    // Check for the old style of region code strings, if found, convert to the new enum.
-    // Those strings will look like "1.0-EU433"
-    if (radioConfig.preferences.region == RegionCode_Unset && strncmp(myNodeInfo.region, "1.0-", 4) == 0) {
-        const char *regionStr = myNodeInfo.region + 4; // EU433 or whatever
-        for (const RegionInfo *r = regions; r->code != RegionCode_Unset; r++)
-            if (strcmp(r->name, regionStr) == 0) {
-                radioConfig.preferences.region = r->code;
-                break;
-            }
-    }
-
     strncpy(myNodeInfo.firmware_version, optstr(APP_VERSION), sizeof(myNodeInfo.firmware_version));
-
-    // hw_model is no longer stored in myNodeInfo (as of 1.2.11) - we now store it as an enum in nodeinfo
-    myNodeInfo.hw_model_deprecated[0] = '\0';
-    // strncpy(myNodeInfo.hw_model, HW_VENDOR, sizeof(myNodeInfo.hw_model));
 
 #ifndef NO_ESP32
     Preferences preferences;
@@ -312,16 +283,16 @@ static const char *channelfile = "/prefs/channels.proto";
 /** Load a protobuf from a file, return true for success */
 bool loadProto(const char *filename, size_t protoSize, size_t objSize, const pb_msgdesc_t *fields, void *dest_struct)
 {
-#ifdef FS
+#ifdef FSCom
     // static DeviceState scratch; We no longer read into a tempbuf because this structure is 15KB of valuable RAM
 
-    auto f = FS.open(filename);
+    auto f = FSCom.open(filename);
 
     // FIXME, temporary hack until every node in the universe is 1.2 or later - look for prefs in the old location (so we can
     // preserve region)
     if (!f && filename == preffile) {
         filename = preffileOld;
-        f = FS.open(filename);
+        f = FSCom.open(filename);
     }
 
     bool okay = false;
@@ -374,11 +345,11 @@ void NodeDB::loadFromDisk()
 /** Save a protobuf from a file, return true for success */
 bool saveProto(const char *filename, size_t protoSize, size_t objSize, const pb_msgdesc_t *fields, const void *dest_struct)
 {
-#ifdef FS
+#ifdef FSCom
     // static DeviceState scratch; We no longer read into a tempbuf because this structure is 15KB of valuable RAM
     String filenameTmp = filename;
     filenameTmp += ".tmp";
-    auto f = FS.open(filenameTmp.c_str(), FILE_O_WRITE);
+    auto f = FSCom.open(filenameTmp.c_str(), FILE_O_WRITE);
     bool okay = false;
     if (f) {
         DEBUG_MSG("Saving %s\n", filename);
@@ -393,9 +364,9 @@ bool saveProto(const char *filename, size_t protoSize, size_t objSize, const pb_
         f.close();
 
         // brief window of risk here ;-)
-        if (!FS.remove(filename))
+        if (!FSCom.remove(filename))
             DEBUG_MSG("Warning: Can't remove old pref file\n");
-        if (!FS.rename(filenameTmp.c_str(), filename))
+        if (!FSCom.rename(filenameTmp.c_str(), filename))
             DEBUG_MSG("Error: can't rename new pref file\n");
     } else {
         DEBUG_MSG("Can't write prefs\n");
@@ -409,8 +380,8 @@ bool saveProto(const char *filename, size_t protoSize, size_t objSize, const pb_
 void NodeDB::saveChannelsToDisk()
 {
     if (!devicestate.no_save) {
-#ifdef FS
-        FS.mkdir("/prefs");
+#ifdef FSCom
+        FSCom.mkdir("/prefs");
 #endif
         saveProto(channelfile, ChannelFile_size, sizeof(ChannelFile), ChannelFile_fields, &channelFile);
     }
@@ -419,15 +390,15 @@ void NodeDB::saveChannelsToDisk()
 void NodeDB::saveToDisk()
 {
     if (!devicestate.no_save) {
-#ifdef FS
-        FS.mkdir("/prefs");
+#ifdef FSCom
+        FSCom.mkdir("/prefs");
 #endif
         saveProto(preffile, DeviceState_size, sizeof(devicestate), DeviceState_fields, &devicestate);
         saveProto(radiofile, RadioConfig_size, sizeof(RadioConfig), RadioConfig_fields, &radioConfig);
         saveChannelsToDisk();
 
         // remove any pre 1.2 pref files, turn on after 1.2 is in beta
-        // if(okay) FS.remove(preffileOld);
+        // if(okay) FSCom.remove(preffileOld);
     } else {
         DEBUG_MSG("***** DEVELOPMENT MODE - DO NOT RELEASE - not saving to flash *****\n");
     }
@@ -467,7 +438,7 @@ size_t NodeDB::getNumOnlineNodes()
     return numseen;
 }
 
-#include "MeshPlugin.h"
+#include "MeshModule.h"
 
 /** Update position info for this node based on received position data
  */
@@ -480,11 +451,11 @@ void NodeDB::updatePosition(uint32_t nodeId, const Position &p, RxSource src)
 
     if (src == RX_SRC_LOCAL) {
         // Local packet, fully authoritative
-        DEBUG_MSG("updatePosition LOCAL pos@%x:5, time=%u, latI=%d, lonI=%d\n", 
+        DEBUG_MSG("updatePosition LOCAL pos@%x:5, time=%u, latI=%d, lonI=%d\n",
                 p.pos_timestamp, p.time, p.latitude_i, p.longitude_i);
         info->position = p;
 
-    } else if ((p.time > 0) && !p.latitude_i && !p.longitude_i && !p.pos_timestamp && 
+    } else if ((p.time > 0) && !p.latitude_i && !p.longitude_i && !p.pos_timestamp &&
                 !p.location_source) {
         // FIXME SPECIAL TIME SETTING PACKET FROM EUD TO RADIO
         // (stop-gap fix for issue #900)
@@ -497,7 +468,7 @@ void NodeDB::updatePosition(uint32_t nodeId, const Position &p, RxSource src)
         // recorded based on the packet rxTime
         //
         // FIXME perhaps handle RX_SRC_USER separately?
-        DEBUG_MSG("updatePosition REMOTE node=0x%x time=%u, latI=%d, lonI=%d\n", 
+        DEBUG_MSG("updatePosition REMOTE node=0x%x time=%u, latI=%d, lonI=%d\n",
                 nodeId, p.time, p.latitude_i, p.longitude_i);
 
         // First, back up fields that we want to protect from overwrite
